@@ -39,7 +39,7 @@ static void usage(const char *argv0)
     fprintf(stderr,
             "Usage: %s [--port PORT]... [--uid UID]... [UID...]\n"
             "\n"
-            "Default hidden ports: 8788, 8765.\n"
+            "Default hidden ports: 8788, 8765, 14731, 14754.\n"
             "Default allowed UIDs: 0, 1000, 2000.\n"
             "Bare numeric arguments are treated as UID whitelist entries.\n",
             argv0);
@@ -88,6 +88,8 @@ static int parse_args(int argc, char **argv, struct config *cfg)
     memset(cfg, 0, sizeof(*cfg));
     add_port(cfg, 8788);
     add_port(cfg, 8765);
+    add_port(cfg, 14731);
+    add_port(cfg, 14754);
     add_uid(cfg, 0);
     add_uid(cfg, 1000);
     add_uid(cfg, 2000);
@@ -536,6 +538,10 @@ int main(int argc, char **argv)
                                  &bind_ret_link);
         if (err) {
             fprintf(stderr, "warning: bind probes unavailable; bind rewrite disabled\n");
+            bpf_link__destroy(getsockname_ret_link);
+            bpf_link__destroy(getsockname_entry_link);
+            getsockname_ret_link = NULL;
+            getsockname_entry_link = NULL;
             err = 0;
         } else {
             bind_rewrite_enabled = 1;

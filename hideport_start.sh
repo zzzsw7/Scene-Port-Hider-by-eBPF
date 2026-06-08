@@ -8,7 +8,7 @@ PIDFILE="/dev/hideport_loader.pid"
 LOCKDIR="/dev/hideport_loader.lock"
 
 PKG="com.omarea.vtools"
-PORTS="8788 8765"
+PORTS="8788 8765 14731 14754"
 ENABLE_EBPF=1
 WAIT_FOR_PROCESS=0
 EXTRA_ALLOWED_UIDS=""

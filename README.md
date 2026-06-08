@@ -1,6 +1,6 @@
 # Scene Port Hider by eBPF
 
-这是一个 KernelSU 模块，用来隐藏 Scene 常用 TCP 端口 `8788` 和 `8765` 的端口探测。
+这是一个 KernelSU 模块，用来隐藏 Scene 常用 TCP 端口 `8788`、`8765`、`14731` 和 `14754` 的端口探测。
 
 模块使用 eBPF 在内核侧做端口行为隐藏，当前覆盖：
 
@@ -18,6 +18,19 @@ com.omarea.vtools
 
 ## 更新内容
 
+### v2.0.3
+
+- 修复 `getsockname()` 临时状态残留风险：每次进入 `getsockname` 探针时都会先清理当前线程旧的 pending 记录，避免异常路径留下的旧状态影响后续非目标 fd。
+- 优化 bind rewrite 挂钩回退逻辑：如果 `getsockname` 探针已经挂载成功，但 `bind` 探针不可用，会立即释放已挂载的 `getsockname` 探针，避免无功能探针残留。
+- 缩小运行包内容：`hideport.bpf.o` 仅作为构建中间产物使用，运行时 BPF 对象已经内嵌进 `hideport_loader`，模块 zip 不再打包该文件。
+
+注：Scene `9.3.1` 新版本实测可 `0` 模块通过 Duck Detector（即不启用本模块）。Duck Detector 对 Scene 端口检测的条件记录为 `14731` HTTP + `14754` sidecar，而 Scene `9.3.1` 实际运行态目前只观察到 `14754`。此外，特殊路径 `/dev/cpuset/scene-daemon` 似乎也已在 Scene `9.3.1` 得到解决；目前仅剩 `/dev/{随机命名}/scene_mode_category` 一类路径痕迹，但 Duck Detector 对该路径的检测似乎已经失效。以上为版本观察记录，后续 Scene 或 Duck Detector 更新后需要重新实测。
+
+### v2.0.2
+
+- 修复 `bind()` 重复绑定指纹：非白名单进程对同一隐藏端口在两个 fd 上 `bind()` 时，旧版会把两个 socket 都改写到不同的临时端口，而 `getsockname()` 对两者都回填隐藏端口，形成「两个 socket 同时绑定同一端口」这种真实内核不可能出现的结果，可被检测器交叉验证识破。现在按 `tgid + 端口` 记录占用，首个 `bind()` 改写并记录占用，占用存活期间同进程对同一隐藏端口的再次 `bind()` 会被拒绝，行为贴近真实内核的 `EADDRINUSE`。`close()` 时释放占用，避免误伤后续合法重绑。
+- 该改动只影响「故意重复绑定隐藏端口」的进程（即检测器）。Scene 在白名单内不进入该路径，普通应用也不会绑定隐藏端口，行为无任何可见变化。
+
 ### v2.0.1
 
 - 修复隐藏端口匹配过宽的问题。现在只按 socket API 使用的网络字节序写入目标端口，避免 `8788` 误伤字节翻转后的 `21538`、`8765` 误伤 `15650`。
@@ -32,6 +45,24 @@ com.omarea.vtools
 - 新增 `close()` 清理逻辑，按 `tgid + fd` 清除临时记录，降低长时间运行后的状态残留风险。
 - 优化 Scene UID 白名单解析，等待包管理器或运行进程提供真实 UID，避免开机早期误判 UID 导致 Scene 自身无法连接 daemon。
 - 新增安装时 BTF 指纹校验，模块包内 `btf/vmlinux.btf` 必须和当前设备 `/sys/kernel/btf/vmlinux` 一致，降低刷错设备包的风险。
+
+## 检测面说明（威胁模型）
+
+本模块面向的是**没有 root 权限的普通应用**（游戏、风控、银行等 `untrusted_app`）的检测。这类应用在 Android 10+ 上受 SELinux 限制，无法读取 `/proc/net/tcp|udp`、无法使用 netlink `SOCK_DIAG`、也看不到其他 UID 的进程和文件。因此它们只能通过**自身发起的系统调用**来探测：`connect()`、`bind()`、`getsockname()`，以及这些调用的时序。
+
+模块已覆盖的探测面：
+
+- `connect(127.0.0.1:隐藏端口)`：非白名单连接被重定向到无服务端口，返回 `ECONNREFUSED`，与真实关闭端口表现一致。这是绝大多数 Scene 检测器实际使用的方式。
+- `bind(隐藏端口)`：非白名单绑定被改写为临时端口。
+- `bind + getsockname()`：回填原始端口，绑定方无感知。
+- `bind` 重复绑定一致性（v2.0.2）：见上文更新内容。
+
+已知但当前未处理的弱信号（真实 Scene 检测器基本不使用，留作记录）：
+
+- **errno 精度**：被拒绝的重复 `bind()` 返回 `EPERM` 而非真实内核的 `EADDRINUSE`。cgroup/bind hook 无法返回特定 errno，信号很弱。
+- **bind+listen 后自连接矛盾**：进程 `bind+listen` 隐藏端口（实际为临时端口），再 `connect()` 该隐藏端口会被重定向拒绝，形成「我在监听该端口却连不上」的矛盾。彻底修复需要 `post_bind` + 按进程端口路由，会引入内核兼容性风险，且需要真机验证，暂不实现。
+
+面向 root 检测器的 `/proc/net` 枚举不在本模块防护范围内。
 
 ## Root 方案兼容性
 
@@ -214,8 +245,8 @@ hideSceneport_module.zip
 su
 cat /data/adb/modules/hideSceneport/hideport.log
 ps -A | grep hideport
-iptables -S OUTPUT | grep -E "8765|8788"
-ip6tables -S OUTPUT | grep -E "8765|8788"
+iptables -S OUTPUT | grep -E "8765|8788|14731|14754"
+ip6tables -S OUTPUT | grep -E "8765|8788|14731|14754"
 exit
 ```
 
@@ -224,6 +255,8 @@ exit
 ```text
 hidden port: 8788
 hidden port: 8765
+hidden port: 14731
+hidden port: 14754
 allowed uid: 0
 allowed uid: 1000
 allowed uid: 2000
@@ -241,7 +274,7 @@ hideport cgroup-connect loaded
 
 `allowed uid` 的具体数字会因设备、用户空间和 Scene 安装方式不同而变化。关键是日志里应同时出现 Scene UI 的真实 UID 和 `scene-daemon` 所需 UID。
 
-同时 `iptables` / `ip6tables` 里不应该再出现本模块写入的 `8765`、`8788` 规则，Scene 应该可以正常打开。
+同时 `iptables` / `ip6tables` 里不应该再出现本模块写入的 `8765`、`8788`、`14731`、`14754` 规则，Scene 应该可以正常打开。
 
 ## 修改配置
 
@@ -249,7 +282,7 @@ hideport cgroup-connect loaded
 
 ```sh
 PKG=com.omarea.vtools
-PORTS="8788 8765"
+PORTS="8788 8765 14731 14754"
 ENABLE_EBPF=1
 EXTRA_ALLOWED_UIDS=""
 WAIT_FOR_UID_TIMEOUT=300
@@ -349,7 +382,7 @@ su -c 'for p in $(pidof hideport_loader); do kill "$p"; done'
 ```sh
 su -c 'cat /data/adb/modules/hideSceneport/hideport.log'
 su -c 'ps -A -o USER,PID,PPID,NAME,ARGS | grep -Ei "scene|omarea|vtools|hideport"'
-su -c 'ss -ltnp | grep -E "8765|8788"'
+su -c 'ss -ltnp | grep -E "8765|8788|14731|14754"'
 ```
 
 正常情况下，日志里的 `allowed uid` 应包含 Scene UI 进程对应的真实 UID。比如进程用户是 `u0_a384`，真实 UID 通常是 `10384`。
@@ -372,7 +405,7 @@ EXTRA_ALLOWED_UIDS="10384"
 
 不会。当前版本不使用 `iptables` / `ip6tables`，也不再打包 `service.d` 端口隐藏脚本。
 
-如果你看到 `8765`、`8788` 相关 iptables 规则，通常是旧版本残留或其他脚本写入。可以禁用旧模块并完整重启后再检查。
+如果你看到 `8765`、`8788`、`14731`、`14754` 相关 iptables 规则，通常是旧版本残留或其他脚本写入。可以禁用旧模块并完整重启后再检查。
 
 ### 安装时报 Kernel BTF mismatch 是什么？
 

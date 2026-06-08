@@ -5,7 +5,6 @@ param(
 $ErrorActionPreference = "Stop"
 $Root = Split-Path -Parent $MyInvocation.MyCommand.Path
 $Loader = Join-Path $Root "system\bin\hideport_loader"
-$BpfObject = Join-Path $Root "system\bin\hideport.bpf.o"
 if ([System.IO.Path]::IsPathRooted($Output)) {
     $OutputPath = $Output
 } else {
@@ -14,10 +13,6 @@ if ([System.IO.Path]::IsPathRooted($Output)) {
 
 if (-not (Test-Path -LiteralPath $Loader)) {
     throw "Missing executable: $Loader. Build it first."
-}
-
-if (-not (Test-Path -LiteralPath $BpfObject)) {
-    throw "Missing BPF object: $BpfObject. Build it first."
 }
 
 if (Test-Path -LiteralPath $OutputPath) {
@@ -49,14 +44,27 @@ $items = @(
     "service.sh",
     "hideport_start.sh",
     "customize.sh",
-    "uninstall.sh",
-    "system"
+    "uninstall.sh"
 )
 
 if (Test-Path -LiteralPath $Fingerprint) {
     $items += "kernel_btf.sha256"
 }
 
-$paths = $items | ForEach-Object { Join-Path $Root $_ }
-Compress-Archive -LiteralPath $paths -DestinationPath $OutputPath -Force
+$Stage = Join-Path ([System.IO.Path]::GetTempPath()) ("hideSceneport-package-" + [Guid]::NewGuid().ToString("N"))
+try {
+    New-Item -ItemType Directory -Path (Join-Path $Stage "system\bin") -Force | Out-Null
+
+    foreach ($item in $items) {
+        Copy-Item -LiteralPath (Join-Path $Root $item) -Destination (Join-Path $Stage $item) -Force
+    }
+    Copy-Item -LiteralPath $Loader -Destination (Join-Path $Stage "system\bin\hideport_loader") -Force
+
+    $archiveItems = Get-ChildItem -LiteralPath $Stage -Force
+    Compress-Archive -LiteralPath $archiveItems.FullName -DestinationPath $OutputPath -Force
+} finally {
+    if (Test-Path -LiteralPath $Stage) {
+        Remove-Item -LiteralPath $Stage -Recurse -Force
+    }
+}
 Write-Host "Wrote $OutputPath"

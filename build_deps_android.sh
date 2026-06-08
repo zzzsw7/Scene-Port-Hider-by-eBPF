@@ -79,17 +79,44 @@ fetch() {
     local url="$2"
     local archive="$3"
     if [[ ! -f "$archive" ]]; then
-        curl -fL --retry 3 "$url" -o "$archive"
+        local tmp_archive="${archive}.tmp"
+        rm -f "$tmp_archive"
+        echo "Fetching $name from $url"
+        if ! curl -fL --retry 3 "$url" -o "$tmp_archive"; then
+            rm -f "$tmp_archive"
+            return 1
+        fi
+        mv "$tmp_archive" "$archive"
     fi
+}
+
+fetch_tar_gz_any() {
+    local name="$1"
+    local archive="$2"
+    shift 2
+
+    if [[ -f "$archive" ]] && tar tzf "$archive" >/dev/null 2>&1; then
+        return 0
+    fi
+    rm -f "$archive"
+
+    local url
+    for url in "$@"; do
+        if fetch "$name" "$url" "$archive" && tar tzf "$archive" >/dev/null 2>&1; then
+            return 0
+        fi
+        rm -f "$archive"
+    done
+
+    echo "Failed to download $name." >&2
+    return 1
 }
 
 if [[ ! -f "$PREFIX/lib/libz.a" ]]; then
     echo "==> Building zlib"
-    fetch zlib "https://zlib.net/current/zlib.tar.gz" zlib-1.3.1.tar.gz
-    if ! tar tzf zlib-1.3.1.tar.gz >/dev/null 2>&1; then
-        rm -f zlib-1.3.1.tar.gz
-        fetch zlib "https://zlib.net/fossils/zlib-1.3.1.tar.gz" zlib-1.3.1.tar.gz
-    fi
+    fetch_tar_gz_any zlib zlib-1.3.1.tar.gz \
+        "https://zlib.net/fossils/zlib-1.3.1.tar.gz" \
+        "https://github.com/madler/zlib/releases/download/v1.3.1/zlib-1.3.1.tar.gz"
     zlib_dir="$(tar_topdir zlib-1.3.1.tar.gz)"
     rm -rf "$zlib_dir"
     tar_extract zlib-1.3.1.tar.gz
